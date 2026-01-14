@@ -11,5 +11,4 @@ I've chosen to build a J.A.R.V.I.S.-operated Iron Man helmet that implements spe
 2 Actuators:
 - The motor that opens and closes the faceplate
 - The Speaker that reads out the names of the people seen by the camera
- -> Potentially replace the speaker with an arm-mounted turret that aims and shoots a laser at a target based on the camera
- -> Reference for that: [https://www.youtube.com/watch?v=a_UiYOO-Sd](https://youtu.be/a_UiYOO-Sdw?si=PaePHdlF61jSJcpm)
+ -> Potentially replace the speaker with an arm-mounted turret that aims and shoots a laser at a target based on the camera. Reference for that: [https://www.youtube.com/watch?v=a_UiYOO-Sd](https://youtu.be/a_UiYOO-Sdw?si=PaePHdlF61jSJcpm)
