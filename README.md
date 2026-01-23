@@ -6,6 +6,7 @@ I've chosen to build a J.A.R.V.I.S.-operated Iron Man helmet that implements spe
 
 2 Inputs: 
 - The microphone for speech recognition
+  - Look into voice-interfacing modules like the Arduino Nicla Voice -> [datasheet](https://docs.arduino.cc/hardware/nicla-voice/)
 - The camera for facial recognition
 
 2 Actuators:
