@@ -14,3 +14,7 @@ I've chosen to build a J.A.R.V.I.S.-operated Iron Man helmet that implements spe
 - The Speaker that reads out the names of the people seen by the camera
    - [Video for implementing facial recognition on Raspberry Pi](https://www.youtube.com/watch?v=3TUlJrRJUeM)
    - Potentially replace the speaker with an arm-mounted turret that aims and shoots a laser at a target seen by the camera. Reference for that: [https://www.youtube.com/watch?v=a_UiYOO-Sd](https://youtu.be/a_UiYOO-Sdw?si=PaePHdlF61jSJcpm)
+ 
+## UPDATE 1/27/2026 -> SHIFTING TO A NEW PROJECT
+Facial Recognition, use voice controls. When greeting someone, read and save their face, then be able to read their name out loud when they are on your screen. 2 input voice commands and camera. 2 Outputs speaker when reading name and the saved file of the person's name.
+- API calls to phone for the processing?
