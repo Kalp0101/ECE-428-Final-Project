@@ -16,5 +16,16 @@ I've chosen to build a J.A.R.V.I.S.-operated Iron Man helmet that implements spe
    - Potentially replace the speaker with an arm-mounted turret that aims and shoots a laser at a target seen by the camera. Reference for that: [https://www.youtube.com/watch?v=a_UiYOO-Sd](https://youtu.be/a_UiYOO-Sdw?si=PaePHdlF61jSJcpm)
  
 ## UPDATE 1/27/2026 -> SHIFTING TO A NEW PROJECT
-Facial Recognition, use voice controls. When greeting someone, read and save their face, then be able to read their name out loud when they are on your screen. 2 input voice commands and camera. 2 Outputs speaker when reading name and the saved file of the person's name.
+Dr.Choi has a tough time remembering people's names. This project aims to address that by giving him a wearable device that performs the grueling task of remembering names and faces for him.
+
+An onboard microphone detects inputs for the voice controls. A specific phrase can be spoken to begin scanning the person's face. Once sufficiently scanned,the speaker output plays a sound to indicate the completed scan and prompts the user to assign a name to the face and saves the name and face to an onboard database. 
+
+Next,the facial recognition will be able to detect whether the person the camera is looking at is someone from the database or unknown. If they are saved in the database,the user can use the voice commands to ask the device to read their name out loud to identify them.
+
+2 Inputs:
+voice commands and camera.
+
+2 Outputs:
+speaker when reading name and the saved file of the person's name.
+
 - API calls to phone for the processing?
