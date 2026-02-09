@@ -18,3 +18,10 @@ speaker for reading the name out loud, and a saved file of the person's face + n
 
 ### Notes:
 Another important aspect of this project is containerizing it using Docker. This GitHub repo acts as a quick place I can store my codebase and write down my ideas during the phase of the project. 
+
+## Facial Recognition
+### The Algorithm:
+Use OpenCV's [Facial Recognition library](https://docs.opencv.org/4.x/da/d60/tutorial_face_main.html) using the Eigenfaces algorithm
+- Definition: They are the eigenvectors of the covariance matrix of a set of face images, often visualized as ghost-like, grayscale images (eigenpictures) that highlight common variations, such as hair, eyes, and pose.
+- Function: Instead of using every pixel to identify a face, the system projects face images into a lower-dimensional "face space" (subspace), creating a weighted combination of these eigenvectors.
+- Recognition Process: A new face is recognized by comparing its specific weights (contributions of each eigenface) to those of known individuals in a database.
