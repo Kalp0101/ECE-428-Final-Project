@@ -10,10 +10,11 @@ Next, the facial recognition system will be able to determine whether the person
 ### 2 Inputs:
 microphone for voice commands, and pi camera.
 - Look into voice-interfacing modules like the Arduino Nicla Voice -> [datasheet](https://docs.arduino.cc/hardware/nicla-voice/)
-- [Video for implementing facial recognition on Raspberry Pi](https://www.youtube.com/watch?v=3TUlJrRJUeM)
+- [Nicla Voice ML code examples of using keyword triggers and built-in speech recognition](https://docs.arduino.cc/tutorials/nicla-voice/getting-started-ml/)
 
 ### 2 Outputs:
 speaker for reading the name out loud, and a saved file of the person's face + name.
+- [Video for implementing facial recognition on Raspberry Pi](https://www.youtube.com/watch?v=3TUlJrRJUeM)
 - API calls to the phone for the language processing?
 
 ### Notes:
