@@ -22,26 +22,27 @@ Another important aspect of this project is containerizing it using Docker. This
 
 ## Facial Recognition
 ### The Algorithm:
-Uses the **face_recognition** [library](https://github.com/ageitgey/face_recognition), which is a high-level wrapper around dlib, which itself uses a deep convolutional neural network (CNN) trained by Davis King. The pipeline has three distinct stages:
+Uses the **face_recognition** [library](https://github.com/ageitgey/face_recognition), which is a high-level wrapper around dlib, which itself uses a deep convolutional neural network (CNN). The pipeline has three distinct stages:
 
 #### **Stage 1:** Face Detection
 
 By default, this uses dlib's Histogram of Oriented Gradients (HOG), which is a widely used feature descriptor, combined with a linear Support Vector Machine (SVM) for object detection
 
-Histogram of Oriented Gradients (HOG): The image is divided into small cells. Within each cell, the gradient direction and magnitude of every pixel is computed. These gradients are binned into a histogram of orientations (typically 9 bins). The result is a compact descriptor of local texture/shape.
-Linear SVM: The HOG descriptor is fed into a Support Vector Machine trained to classify regions as "face" or "not face". A sliding window scans the image at multiple scales to detect faces of varying sizes.
-Why we resize to 1/4: face_locations is O(n^2) with respect to image dimensions. Shrinking the frame 4x reduces computation by ~16x at the cost of detecting only larger faces.
-An alternative is model="cnn", which uses a max-pooling CNN and is significantly more accurate but much slower.
+HOG: The image is divided into small cells. Within each cell, the gradient direction and magnitude of every pixel is computed. These gradients are binned into a histogram of orientations (typically 9 bins). The result is a compact descriptor of local texture/shape.
 
-#### **Stage 2:** Face Encoding (The Core Algorithm)
+Linear SVM: The HOG descriptor is fed into an SVM trained to classify regions as "face" or "not face". A sliding window scans the image at multiple scales to detect faces of varying sizes.
+We resize to 1/4 since face_locations is O(n^2) with respect to image dimensions. Shrinking the frame 4x reduces computation by ~16x at the cost of detecting only larger faces.
+Using a max-pooling CNN is significantly more accurate but much slower.
 
-This is the most sophisticated part. It is a two-step process:
+#### **Stage 2:** Face Encoding
 
-a. Face Alignment via Landmark Detection
+This is a two-step process and is the core of the algorithm.
 
-Before encoding, dlib runs a 68-point facial landmark predictor (a regression tree ensemble) to identify key points: corners of eyes, tip of nose, jawline, etc. The face is then affine-transformed — rotated, scaled, and cropped — so that eyes and mouth are always in the same canonical positions. This normalization is critical; without it, the same face at different angles would produce very different embeddings.
+1. Face Alignment via Landmark Detection
 
-b. Deep Metric Learning with a ResNet
+Before encoding, dlib runs a 68-point facial landmark predictor (a regression tree ensemble) to identify key points: corners of eyes, tip of nose, jawline, etc. The face is then affine-transformed, rotated, scaled, and cropped so that eyes and mouth are always in the same canonical positions. This normalization is critical; without it, the same face at different angles would produce very different embeddings.
+
+2. Deep Metric Learning with a ResNet
 
 The aligned face is passed through a ResNet-34-like CNN (29 convolutional layers) that was trained using metric learning (specifically a variant of triplet loss):
 
@@ -54,16 +55,16 @@ A = anchor face (a person)
 P = positive sample (same person, different photo)
 N = negative sample (different person)
 α = margin (enforces separation)
-The network is trained to minimize distance between embeddings of the same person and maximize distance between embeddings of different people. After training on millions of faces, the network outputs a 128-dimensional unit vector — a point on a hypersphere in R^128 that uniquely represents a face.
+The network is trained to minimize distance between embeddings of the same person and maximize distance between embeddings of different people. After training on millions of faces, the network outputs a 128-dimensional unit vector, which is a point on a hypersphere in R^128 that uniquely represents a face.
 
-#### **Stage 3:** Recognition via Euclidean Distance
+#### **Stage 3:** Recognition via Euclidean Distance (Eigenfaces)
 
 $$
 d(e_1, e_2) = \|e_1 - e_2\|_2
 = \sqrt{\sum_{i=1}^{128} (e_{1i} - e_{2i})^2}
 $$
 
-Since all embeddings are unit-normalized, this Euclidean distance is directly related to **cosine similarity**. The threshold `0.6` means: if two embeddings are within distance 0.6 in the 128-D space, they are considered the same person. Empirically:
+Since all embeddings are unit-normalized, this Euclidean distance is directly related to **cosine similarity**. The threshold `0.6` means that if two embeddings are within a distance of 0.6 in the 128-D space, they are considered the same person. Empirically:
 
 <div align="center">
 
