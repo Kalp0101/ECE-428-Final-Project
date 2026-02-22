@@ -18,7 +18,7 @@ speaker for reading the name out loud, and a saved file of the person's face + n
 - API calls to the phone for the language processing?
 
 ### Notes:
-Another important aspect of this project is containerizing it using Docker. This GitHub repo acts as a quick place I can store my codebase and write down my ideas during the phase of the project. 
+Another important aspect of this project is containerizing it using Docker. This GitHub repo acts as a quick place I can store my codebase and write down my ideas during the phase of the project. Also, I am documenting the codebase as I research the algorithms I plan to use.
 
 ## Facial Recognition
 ### The Algorithm:
