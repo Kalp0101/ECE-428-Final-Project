@@ -58,5 +58,5 @@ Since all embeddings are unit-normalized, this Euclidean distance is directly re
 | 0.4 – 0.6 | Likely match |
 | > 0.6    | Likely different people |
 
-#To summarize the pipeline:
+### To summarize the pipeline:
 Raw frame → HOG/SVM detection → 68-point landmark alignment → ResNet-34 embedding → 128-D vector → Euclidean distance comparison
