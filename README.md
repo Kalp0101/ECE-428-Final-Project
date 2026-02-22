@@ -24,7 +24,8 @@ Another important aspect of this project is containerizing it using Docker. This
 ### The Algorithm:
 Uses the **face_recognition** [library](https://github.com/ageitgey/face_recognition), which is a high-level wrapper around dlib, which itself uses a deep convolutional neural network (CNN) trained by Davis King. The pipeline has three distinct stages:
 
-Stage 1: Face Detection
+#### **Stage 1:** Face Detection
+
 By default, this uses dlib's HOG + Linear SVM detector:
 
 Histogram of Oriented Gradients (HOG): The image is divided into small cells. Within each cell, the gradient direction and magnitude of every pixel is computed. These gradients are binned into a histogram of orientations (typically 9 bins). The result is a compact descriptor of local texture/shape.
@@ -32,15 +33,22 @@ Linear SVM: The HOG descriptor is fed into a Support Vector Machine trained to c
 Why we resize to 1/4: face_locations is O(n^2) with respect to image dimensions. Shrinking the frame 4x reduces computation by ~16x at the cost of detecting only larger faces.
 An alternative is model="cnn", which uses a max-pooling CNN and is significantly more accurate but much slower.
 
-Stage 2: Face Encoding (The Core Algorithm)
+#### **Stage 2:** Face Encoding (The Core Algorithm)
+
 This is the most sophisticated part. It is a two-step process:
 
 a. Face Alignment via Landmark Detection
+
 Before encoding, dlib runs a 68-point facial landmark predictor (a regression tree ensemble) to identify key points: corners of eyes, tip of nose, jawline, etc. The face is then affine-transformed — rotated, scaled, and cropped — so that eyes and mouth are always in the same canonical positions. This normalization is critical; without it, the same face at different angles would produce very different embeddings.
 
 b. Deep Metric Learning with a ResNet
+
 The aligned face is passed through a ResNet-34-like CNN (29 convolutional layers) that was trained using metric learning (specifically a variant of triplet loss):
-$\mathcal{L} = \max(0,\ \|f(A) - f(P)\|^2 - \|f(A) - f(N)\|^2 + \alpha)$
+
+$$
+\mathcal{L} = \max \left(0,\ \|f(A) - f(P)\|^2 - \|f(A) - f(N)\|^2 + \alpha \right)
+$$
+
 Where:
 A = anchor face (a person)
 P = positive sample (same person, different photo)
@@ -48,9 +56,16 @@ N = negative sample (different person)
 α = margin (enforces separation)
 The network is trained to minimize distance between embeddings of the same person and maximize distance between embeddings of different people. After training on millions of faces, the network outputs a 128-dimensional unit vector — a point on a hypersphere in R^128 that uniquely represents a face.
 
-Stage 3: Recognition via Euclidean Distance
-$d(e_1, e_2) = \|e_1 - e_2\|_2 = \sqrt{\sum_{i=1}^{128} (e_{1i} - e_{2i})^2}$
+#### **Stage 3:** Recognition via Euclidean Distance
+
+$$
+d(e_1, e_2) = \|e_1 - e_2\|_2
+= \sqrt{\sum_{i=1}^{128} (e_{1i} - e_{2i})^2}
+$$
+
 Since all embeddings are unit-normalized, this Euclidean distance is directly related to **cosine similarity**. The threshold `0.6` means: if two embeddings are within distance 0.6 in the 128-D space, they are considered the same person. Empirically:
+
+<div align="center">
 
 | Distance | Interpretation |
 |----------|---------------|
@@ -58,5 +73,7 @@ Since all embeddings are unit-normalized, this Euclidean distance is directly re
 | 0.4 – 0.6 | Likely match |
 | > 0.6    | Likely different people |
 
-### To summarize the pipeline:
+</div>
+
+### To summarize:
 Raw frame → HOG/SVM detection → 68-point landmark alignment → ResNet-34 embedding → 128-D vector → Euclidean distance comparison
