@@ -4,7 +4,7 @@ import pickle
 import os
 
 # File to store the facial embeddings database
-# Use absolute path so the database is always found regardless of working directory
+# Use an absolute path so the database is always found regardless of a working directory
 DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faces.pkl")
 
 def load_database():
@@ -19,7 +19,7 @@ def load_database():
         try:
             return pickle.load(f)
         except EOFError:
-            # Handle empty file case
+            # Empty file case
             return {"names": [], "encodings": []}
 
 def save_to_database(name, encoding):
@@ -35,15 +35,15 @@ def save_to_database(name, encoding):
 
 def capture_single_face_encoding():
     """
-    Activates the webcam, continuously displays the feed, and waits until 
-    at least one face is detected. Captures the first detected face, generates 
-    its embedding, and returns it. Closes the camera when done.
+    Activates the camera, continuously displays the feed, and waits until 
+    at least one face is detected. Captures the first detected face, creates
+    an embedding, and returns it. Closes the camera when done.
     """
     cap = cv2.VideoCapture(0)
     
-    # Handle camera errors
+    # Handle camera error stuff
     if not cap.isOpened():
-        print("Error: Could not access the webcam.")
+        print("Error: Could not access the camera. Lock in dude.")
         return None
 
     print("Camera activated. Waiting for a face...")
@@ -52,13 +52,13 @@ def capture_single_face_encoding():
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("Error: Failed to read frame from webcam.")
+            print("Error: Failed to read frame from cam.")
             break
 
         # Continuously display the camera feed
-        cv2.imshow("Webcam Feed - Waiting for Face", frame)
+        cv2.imshow("Camera Feed - Waiting for Face", frame)
         
-        # Resize frame to 1/4 size to improve processing performance
+        # Resize frame to 1/4 size for processing
         small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
         
         # Convert OpenCV's BGR color format to RGB for face_recognition
@@ -78,8 +78,7 @@ def capture_single_face_encoding():
                 face_encoding = encodings[0]
                 break
 
-        # OpenCV requires waitKey to update the display window
-        # Allows user to manually abort with 'q' if stuck
+        # OpenCV requires waitKey to update the display window so allow the user to manually abort with 'q' if stuck
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("Camera capture manually aborted.")
             break
@@ -95,8 +94,8 @@ def main():
     Main execution loop. Continuously waits for user console input and 
     triggers the appropriate scanning or recognition workflows.
     """
-    print("Facial Recognition System Initialized.")
-    print("Commands: 'Start scanning', 'Who is this?', 'What is their name?', or 'exit'")
+    print("Facial Recognition System Started.")
+    print("Commands are: 'Start scanning', 'Who is this?', 'What is their name?', or 'exit'")
     
     while True:
         # Continuously wait for user input from the console
@@ -134,7 +133,7 @@ def main():
                 best_match_index = int(np.argmin(face_distances))
                 best_distance = face_distances[best_match_index]
 
-                # Tolerance of 0.6 is the recommended default
+                # Tolerance of 0.6 for now
                 if best_distance <= 0.6:
                     matched_name = db["names"][best_match_index]
                     print(f"Their name is {matched_name} (distance: {best_distance:.3f})")
@@ -142,7 +141,7 @@ def main():
                     print(f"I don't know (closest distance: {best_distance:.3f})")
                     
         else:
-            print("Unknown command. Please enter a valid command.")
+            print("Unknown command. Please enter an actual command.")
 
 if __name__ == "__main__":
     main()
