@@ -26,7 +26,7 @@ Uses the **face_recognition** [library](https://github.com/ageitgey/face_recogni
 
 #### **Stage 1:** Face Detection
 
-By default, this uses dlib's HOG + Linear SVM detector:
+By default, this uses dlib's Histogram of Oriented Gradients (HOG), which is a widely used feature descriptor, combined with a linear Support Vector Machine (SVM) for object detection
 
 Histogram of Oriented Gradients (HOG): The image is divided into small cells. Within each cell, the gradient direction and magnitude of every pixel is computed. These gradients are binned into a histogram of orientations (typically 9 bins). The result is a compact descriptor of local texture/shape.
 Linear SVM: The HOG descriptor is fed into a Support Vector Machine trained to classify regions as "face" or "not face". A sliding window scans the image at multiple scales to detect faces of varying sizes.
