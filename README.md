@@ -78,3 +78,6 @@ Since all embeddings are unit-normalized, this Euclidean distance is directly re
 
 ### To summarize:
 Raw frame → HOG/SVM detection → 68-point landmark alignment → ResNet-34 embedding → 128-D vector → Euclidean distance comparison
+
+## Voice Detection and Control
+I'm gonna try to implement it using a custom keyword detection model on the Nicla Voice, but if I can't finish it in time, I'll rely on [Nvidia's Nemotron Speech STT (Speech-To-Text) model](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) running on the Pi. 
