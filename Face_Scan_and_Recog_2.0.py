@@ -1,299 +1,236 @@
-"""
-ECE428 Final Project — Facial Recognition System
-==================================================
-Interrupt-driven facial recognition system designed to run on a Raspberry Pi.
-Uses OpenCV for camera access and face_recognition for embedding generation/matching.
-Stores known faces in a persistent pickle database (faces.pkl).
-"""
-
-import os
-import sys
-import signal
-import pickle
-import threading
 import cv2
 import face_recognition
+import pickle
+import os
+import subprocess
+import speech_recognition as sr
+from faster_whisper import WhisperModel
 import numpy as np
 
-# ─────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────
-DATABASE_FILE = "faces.pkl"          # Persistent storage for face embeddings
-SCALE_FACTOR = 0.25                  # Resize to 1/4 for Pi performance
-MATCH_TOLERANCE = 0.6                # face_recognition comparison threshold
-CAMERA_INDEX = 0                     # Default webcam device index
+# Dictionary mapping detected phrases to their corresponding audio files
+AUDIO_RESPONSES = {
+    "start scanning": "completed_scan.m4a",
+    "start scan": "completed_scan.m4a",
+    "who is this": "analyzing_face.m4a",
+    "what is their name": "type_out_their_name.m4a",
+    "exit": "shutting_down.m4a",
+    "unknown command": "unknown_command.m4a",
+    "not recognized": "not_recognized.m4a",
+    "camera error": "camera_error.m4a"
+}
 
-# ─────────────────────────────────────────────
-# Global state (for signal-handler access)
-# ─────────────────────────────────────────────
-_camera_lock = threading.Lock()      # Guards camera open/close
-_active_camera = None                # Reference so signal handler can release
-
-
-# ─────────────────────────────────────────────
-# Signal / interrupt handling
-# ─────────────────────────────────────────────
-def _cleanup_handler(signum, frame):
+def play_audio(file_name):
     """
-    Interrupt handler for SIGINT / SIGTERM.
-    Releases the camera immediately and destroys any OpenCV windows
-    so the device is never left in a locked state — critical for a
-    battery-powered Raspberry Pi wearable where a pi camera drains power.
+    Plays an M4A audio file through the default system audio (Bluetooth).
+    Relies on ffmpeg being installed on the Raspberry Pi.
     """
-    global _active_camera
-    print("\n[INFO] Interrupt received — cleaning up...")
-    with _camera_lock:
-        if _active_camera is not None:
-            _active_camera.release()
-            _active_camera = None
-    cv2.destroyAllWindows()
-    sys.exit(0)
-
-
-# Register for both SIGINT (Ctrl-C) and SIGTERM (kill / systemd stop)
-signal.signal(signal.SIGINT, _cleanup_handler)
-signal.signal(signal.SIGTERM, _cleanup_handler)
-
-
-# ─────────────────────────────────────────────
-# Database helpers
-# ─────────────────────────────────────────────
-def load_database(path: str) -> dict:
-    """
-    Load the face database from a pickle file.
-    Returns a dict with keys 'names' (list[str]) and 'encodings' (list[np.ndarray]).
-    Creates an empty database if the file does not exist or is corrupted.
-    """
-    if os.path.exists(path):
+    audio_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), file_name)
+    if os.path.exists(audio_path):
         try:
-            with open(path, "rb") as f:
-                data = pickle.load(f)
-            # Validate structure
-            if isinstance(data, dict) and "names" in data and "encodings" in data:
-                print(f"[INFO] Loaded {len(data['names'])} face(s) from database.")
-                return data
-        except (pickle.UnpicklingError, EOFError, KeyError) as exc:
-            print(f"[WARN] Database corrupted ({exc}); starting fresh.")
-    # Return empty database if file missing or invalid
-    return {"names": [], "encodings": []}
+            # Using ffplay from ffmpeg to play the file asynchronously without a display
+            subprocess.Popen(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_path])
+        except Exception as e:
+            print(f"Error playing audio: {e}")
+    else:
+        print(f"Warning: Audio file not found at {audio_path}")
 
+# Initialize Whisper model (optimized for Raspberry Pi - CPU, int8, tiny model)
+print("Loading Whisper model...")
+try:
+    whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+except Exception as e:
+    print(f"Warning: Could not load whisper model. {e}")
+    whisper_model = None
 
-def save_database(path: str, data: dict) -> None:
-    """Persist the face database to disk."""
-    with open(path, "wb") as f:
-        pickle.dump(data, f)
-    print(f"[INFO] Database saved ({len(data['names'])} face(s)).")
+# File to store the facial embeddings database
+# Use an absolute path so the database is always found regardless of a working directory
+DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "faces.pkl")
 
-
-# ─────────────────────────────────────────────
-# Camera helpers
-# ─────────────────────────────────────────────
-def open_camera(index: int = CAMERA_INDEX) -> cv2.VideoCapture:
+def load_database():
     """
-    Open the webcam and store a global reference so the interrupt handler
-    can release it if the user sends SIGINT mid-capture.
+    Loads the facial embeddings database from a pickle file.
+    If the file does not exist or is empty, returns an empty database structure.
     """
-    global _active_camera
-    cap = cv2.VideoCapture(index)
+    if not os.path.exists(DB_FILE):
+        return {"names": [], "encodings": []}
+    
+    with open(DB_FILE, "rb") as f:
+        try:
+            return pickle.load(f)
+        except EOFError:
+            # Empty file case
+            return {"names": [], "encodings": []}
+
+def save_to_database(name, encoding):
+    """
+    Saves a new name and its corresponding facial embedding to the pickle file.
+    """
+    db = load_database()
+    db["names"].append(name)
+    db["encodings"].append(encoding)
+    
+    with open(DB_FILE, "wb") as f:
+        pickle.dump(db, f)
+
+def capture_single_face_encoding():
+    """
+    Activates the camera, continuously displays the feed, and waits until 
+    at least one face is detected. Captures the first detected face, creates
+    an embedding, and returns it. Closes the camera when done.
+    """
+    cap = cv2.VideoCapture(0)
+    
+    # Handle camera error stuff
     if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera (index {index}).")
-    with _camera_lock:
-        _active_camera = cap
-    return cap
+        print("Error: Could not access the camera. Lock in dude.")
+        play_audio(AUDIO_RESPONSES["camera error"])
+        return None
 
-
-def close_camera(cap: cv2.VideoCapture) -> None:
-    """Release camera and destroy preview windows."""
-    global _active_camera
-    with _camera_lock:
-        if cap is not None:
-            cap.release()
-        _active_camera = None
-    cv2.destroyAllWindows()
-
-
-def capture_face(cap: cv2.VideoCapture) -> np.ndarray | None:
-    """
-    Continuously read frames from *cap*, display them, and attempt face detection.
-
-    Processing pipeline per frame:
-        1. Read BGR frame from camera.
-        2. Resize to 1/4 resolution (SCALE_FACTOR) for faster detection on Pi.
-        3. Convert BGR → RGB (face_recognition expects RGB).
-        4. Detect face locations.
-        5. If ≥1 face found → compute encoding for the *first* face and return it.
-
-    The user can press 'q' in the preview window to abort.
-    Returns the 128-d face encoding, or None if aborted / no face found.
-    """
-    print("[INFO] Camera active — looking for a face (press 'q' in window to cancel)...")
+    print("Camera activated. Waiting for a face...")
+    face_encoding = None
 
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("[ERROR] Failed to read frame from camera.")
-            return None
+            print("Error: Failed to read frame from cam.")
+            break
 
-        # ── Show the live feed at full resolution ──
-        cv2.imshow("Camera Feed", frame)
+        # Continuously display the camera feed
+        cv2.imshow("Camera Feed - Waiting for Face", frame)
+        
+        # Resize frame to 1/4 size for processing
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        
+        # Convert OpenCV's BGR color format to RGB for face_recognition
+        rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        
+        # Detect face locations in the current frame
+        face_locations = face_recognition.face_locations(rgb_small_frame)
 
-        # ── Down-scale for faster face detection ──
-        small_frame = cv2.resize(frame, (0, 0), fx=SCALE_FACTOR, fy=SCALE_FACTOR)
+        # Wait until at least one face is detected
+        if len(face_locations) > 0:
+            print("Face detected! Extracting embedding...")
+            # Generate facial embeddings for the detected faces
+            encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
+            
+            if len(encodings) > 0:
+                # Capture the first detected face only
+                face_encoding = encodings[0]
+                break
 
-        # ── Convert BGR (OpenCV default) → RGB (face_recognition expects) ──
-        rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        # OpenCV requires waitKey to update the display window so allow the user to manually abort with 'q' if stuck
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Camera capture manually aborted.")
+            break
 
-        # ── Detect faces ──
-        face_locations = face_recognition.face_locations(rgb_small)
+    # Clean up and close the camera
+    cap.release()
+    cv2.destroyAllWindows()
+    
+    return face_encoding
 
-        if face_locations:
-            # Use only the first detected face
-            print(f"[INFO] Detected {len(face_locations)} face(s) — using the first one.")
-            encodings = face_recognition.face_encodings(rgb_small, face_locations)
-            if encodings:
-                return encodings[0]
-            else:
-                print("[WARN] Face detected but encoding failed; retrying...")
-
-        # ── Allow window events & check for 'q' key to abort ──
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            print("[INFO] Capture cancelled by user.")
-            return None
-
-
-# ─────────────────────────────────────────────
-# Command handlers
-# ─────────────────────────────────────────────
-def handle_start_scanning(db: dict) -> dict:
+def listen_for_command():
     """
-    'Start scanning' workflow:
-        1. Open camera → detect & encode a face.
-        2. Prompt user for the person's name.
-        3. Store the (name, encoding) pair in the database and persist to disk.
-    Returns the (possibly updated) database dict.
+    Listens to the microphone and uses faster_whisper to transcribe voice to text.
+    Returns the lowercased transcription. Optimized for Raspberry Pi.
     """
+    if whisper_model is None:
+        return input("\nEnter command (fallback due to model error): ").strip().lower()
+        
+    recognizer = sr.Recognizer()
     try:
-        cap = open_camera()
-    except RuntimeError as exc:
-        print(f"[ERROR] {exc}")
-        return db
+        with sr.Microphone(sample_rate=16000) as source:
+            print("\nListening for voice command...")
+            recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            # Listen to the user with a timeout to prevent hanging
+            audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+    except Exception as e:
+        print(f"Microphone error: {e}")
+        return ""
 
-    encoding = capture_face(cap)
-    close_camera(cap)
-
-    if encoding is None:
-        print("[INFO] No face captured — nothing saved.")
-        return db
-
-    # ── Ask for a name (console input) ──
-    name = input("Enter a name for this face: ").strip()
-    if not name:
-        print("[WARN] Empty name — discarding capture.")
-        return db
-
-    db["names"].append(name)
-    db["encodings"].append(encoding)
-    save_database(DATABASE_FILE, db)
-    print(f"[INFO] Face for '{name}' registered successfully.")
-    return db
-
-
-def handle_identify(db: dict) -> None:
-    """
-    'Who is this?' / 'What is their name?' workflow:
-        1. Check that the database is non-empty.
-        2. Open camera → detect & encode a face.
-        3. Compare against all stored encodings (tolerance = MATCH_TOLERANCE).
-        4. Print the matched name or "I don't know".
-    """
-    if not db["encodings"]:
-        print("[INFO] The database is empty — please scan a face first.")
-        return
-
+    print("Processing voice...")
     try:
-        cap = open_camera()
-    except RuntimeError as exc:
-        print(f"[ERROR] {exc}")
-        return
+        # Get raw 16-bit PCM audio data and convert to 32-bit float for Whisper
+        audio_data = np.frombuffer(audio.get_raw_data(), np.int16).astype(np.float32) / 32768.0
+        
+        # Transcribe with a tiny beam size for faster execution on Pi
+        segments, _ = whisper_model.transcribe(audio_data, beam_size=1, language="en")
+        transcription = " ".join([segment.text for segment in segments]).strip().lower()
+        
+        # Strip simple punctuation to make matching easier
+        for char in [".", ",", "?", "!"]:
+            transcription = transcription.replace(char, "")
+            
+        print(f"Heard: '{transcription}'")
+        return transcription
+    except Exception as e:
+        print(f"Transcription error: {e}")
+        return ""
 
-    encoding = capture_face(cap)
-    close_camera(cap)
-
-    if encoding is None:
-        print("[INFO] No face captured — identification aborted.")
-        return
-
-    # ── Compare the captured encoding against every stored encoding ──
-    matches = face_recognition.compare_faces(
-        db["encodings"], encoding, tolerance=MATCH_TOLERANCE
-    )
-
-    if True in matches:
-        # If multiple matches, pick the one with the smallest distance
-        distances = face_recognition.face_distance(db["encodings"], encoding)
-        best_idx = int(np.argmin(distances))
-        if matches[best_idx]:
-            print(f"Their name is {db['names'][best_idx]}")
-        else:
-            # Edge case: closest distance face wasn't in the boolean match list
-            first_match_idx = matches.index(True)
-            print(f"Their name is {db['names'][first_match_idx]}")
-    else:
-        print("I don't know")
-
-
-# ─────────────────────────────────────────────
-# Main event loop (interrupt-driven)
-# ─────────────────────────────────────────────
-def main() -> None:
+def main():
     """
-    Primary event loop.  Blocks on input() — which is effectively an
-    interrupt-driven design: the program sleeps with zero CPU usage until
-    the user (or a future hardware button via stdin pipe) provides a command.
-
-    Supported commands:
-        start scanning          — register a new face
-        who is this?            — identify a face
-        what is their name?     — identify a face (alias)
-        exit                    — shut down gracefully
+    Main execution loop. Continuously waits for user console input and 
+    triggers the appropriate scanning or recognition workflows.
     """
-    print("=" * 55)
-    print("  Facial Recognition System  —  ECE428 Final Project")
-    print("=" * 55)
-    print("Commands:")
-    print("  Start scanning        → Register a new face")
-    print("  Who is this?          → Identify a face")
-    print("  What is their name?   → Identify a face")
-    print("  exit                  → Quit")
-    print("=" * 55)
-
-    # ── Load (or create) persistent database ──
-    db = load_database(DATABASE_FILE)
-
+    print("Facial Recognition System Started.")
+    print("Commands are: 'Start scanning', 'Who is this?', 'What is their name?', or 'exit'")
+    
     while True:
-        try:
-            user_input = input("\n> ").strip().lower()
-        except EOFError:
-            # stdin closed (e.g. pipe ended) — treat as exit
+        # Continuously listen for user audio input from the console instead of typing
+        command = listen_for_command()
+        
+        # In case nothing was recorded or model failed
+        if not command:
+            continue
+
+        if "exit" in command:
+            print("Exiting system.")
+            play_audio(AUDIO_RESPONSES["exit"])
             break
 
-        if user_input == "exit":
-            print("[INFO] Exiting. Goodbye!")
-            break
+        elif "start scanning" in command or "start scan" in command:
+            play_audio(AUDIO_RESPONSES["start scanning"])
+            encoding = capture_single_face_encoding()
+            if encoding is not None:
+                # Ask the user for a name via terminal input to prevent typos with voice models
+                play_audio(AUDIO_RESPONSES["what is their name"])
+                name = input("Face captured successfully. What is their name? ").strip()
+                if name:
+                    # Save the face embedding and name into the persistent database
+                    save_to_database(name, encoding)
+                    print(f"Profile for '{name}' created and saved.")
+                else:
+                    print("Name cannot be empty. Capture discarded.")
 
-        elif user_input == "start scanning":
-            db = handle_start_scanning(db)
+        elif "who is this" in command or "what is their name" in command or "what's their name" in command:
+            play_audio(AUDIO_RESPONSES["who is this"])
+            encoding = capture_single_face_encoding()
+            if encoding is not None:
+                db = load_database()
+                
+                # Handle empty database case
+                if not db["encodings"]:
+                    print("I don't know")
+                    play_audio(AUDIO_RESPONSES["not recognized"])
+                    continue
+                
+                # Use face distances to find the best match
+                import numpy as np
+                face_distances = face_recognition.face_distance(db["encodings"], encoding)
+                best_match_index = int(np.argmin(face_distances))
+                best_distance = face_distances[best_match_index]
 
-        elif user_input in ("who is this?", "what is their name?"):
-            handle_identify(db)
-
-        elif user_input == "":
-            continue  # ignore blank lines
-
+                # Tolerance of 0.6 for now
+                if best_distance <= 0.6:
+                    matched_name = db["names"][best_match_index]
+                    print(f"Their name is {matched_name} (distance: {best_distance:.3f})")
+                else:
+                    print(f"I don't know (closest distance: {best_distance:.3f})")
+                    play_audio(AUDIO_RESPONSES["not recognized"])
+                    
         else:
-            print("[WARN] Unknown command. Type 'Start scanning', "
-                  "'Who is this?', 'What is their name?', or 'exit'.")
-
+            print("Unknown command. Please enter an actual command.")
+            play_audio(AUDIO_RESPONSES["unknown command"])
 
 if __name__ == "__main__":
     main()
