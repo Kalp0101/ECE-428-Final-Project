@@ -1,7 +1,9 @@
+#!/usr/bin/env python3
 import cv2
 import face_recognition
 import pickle
 import os
+import sys
 import subprocess
 import speech_recognition as sr
 from faster_whisper import WhisperModel
@@ -12,6 +14,36 @@ import argparse
 import time
 import sounddevice as sd
 import scipy.io.wavfile as wavfile
+import warnings
+from contextlib import contextmanager
+from typing import Optional
+
+# ── Terminal Silence & Error Suppression ──────────────────────────────────────
+# Suppress pkg_resources deprecation warnings only — scoped to avoid hiding
+# meaningful warnings from face_recognition or faster-whisper.
+warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
+
+@contextmanager
+def suppress_system_errors():
+    """
+    Temporarily redirects low-level C library errors (like JACK, ALSA, and Qt)
+    to /dev/null to keep the terminal clean.
+
+    This works at the file descriptor level so it catches noise from C libraries
+    that bypass Python's warning system entirely. It is safe here because
+    _processing_lock ensures on_wake_triggered() only runs on one thread at a
+    time — no concurrent thread will lose an error to the redirect.
+    """
+    null_fd = os.open(os.devnull, os.O_RDWR)
+    old_stderr_fd = os.dup(sys.stderr.fileno())
+    try:
+        os.dup2(null_fd, sys.stderr.fileno())
+        yield
+    finally:
+        os.dup2(old_stderr_fd, sys.stderr.fileno())
+        os.close(null_fd)
+        os.close(old_stderr_fd)
+
 
 # ── Deployment Flag ───────────────────────────────────────────────────────────
 # Set to True before final deployment in the enclosed, headless unit.
@@ -20,7 +52,7 @@ HEADLESS = False
 
 # ── Registration Flag (set via argparse in main()) ────────────────────────────
 # Controls whether face enrollment is permitted. Set True only when running
-# with --register flag (i.e., during setup with a keyboard/display available).
+# with --register flag (i.e., during setup with a microphone available).
 REGISTRATION_ENABLED = False
 
 # ── GPIO Configuration ────────────────────────────────────────────────────────
@@ -31,21 +63,21 @@ WAKE_GPIO_PIN = 17
 wake_button = Button(WAKE_GPIO_PIN, pull_up=False, bounce_time=0.3)
 
 # ── Audio Recording Configuration ────────────────────────────────────────────
-SAMPLE_RATE = 16000           # Hz — matches Whisper's expected input rate
-NAME_RECORDING_SECONDS = 5    # Duration of the name recording prompt
+SAMPLE_RATE = 16000        # Hz — matches Whisper's expected input rate
+NAME_RECORDING_SECONDS = 5 # Duration of the name recording prompt
 RECORDINGS_DIR = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "name_recordings"
 )
 
 # ── Audio Response Files ──────────────────────────────────────────────────────
-# All .m4a files should live in the same directory as this script.
+# All .m4a files must live in the same directory as this script.
 #
 # Required files:
 #   ready_chime.m4a      — plays when Nicla wake trigger fires
 #   completed_scan.m4a   — plays when face scan begins
 #   analyzing_face.m4a   — plays when identification begins
-#   say_their_name.m4a   — NEW: prompts user to record the person's name
-#   their_name_is.m4a    — NEW: "Their name is..." prefix before name playback
+#   say_their_name.m4a   — prompts user to record the person's name
+#   their_name_is.m4a    — "Their name is..." prefix before name playback
 #   shutting_down.m4a    — plays on exit command
 #   unknown_command.m4a  — plays on unrecognised command
 #   not_recognized.m4a   — plays when face is not in the database
@@ -84,7 +116,6 @@ def play_audio(file_path: str):
     """
     Play an audio file asynchronously (non-blocking).
     Use for one-shot cues where the program should continue immediately.
-    Accepts both relative filenames and absolute paths.
     """
     resolved = _resolve_path(file_path)
     if os.path.exists(resolved):
@@ -101,9 +132,8 @@ def play_audio(file_path: str):
 def play_audio_sync(file_path: str):
     """
     Play an audio file synchronously (blocking).
-    Use when the next action must wait until playback finishes —
-    e.g., playing "Their name is..." immediately before the name recording.
-    Accepts both relative filenames and absolute paths.
+    Use when the next action must wait until playback finishes — e.g., playing
+    "Their name is..." immediately before the recorded name clip.
     """
     resolved = _resolve_path(file_path)
     if os.path.exists(resolved):
@@ -121,7 +151,8 @@ def play_audio_sync(file_path: str):
 # ── Whisper Model ─────────────────────────────────────────────────────────────
 print("Loading Whisper model...")
 try:
-    whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
+    with suppress_system_errors():
+        whisper_model = WhisperModel("tiny.en", device="cpu", compute_type="int8")
     print("Whisper model loaded.")
 except Exception as e:
     print(f"Warning: Could not load Whisper model. {e}")
@@ -131,12 +162,12 @@ except Exception as e:
 # ── Face Database ─────────────────────────────────────────────────────────────
 # Database schema:
 #   {
-#       "encodings":   [np.ndarray, ...],   # 128-d face embeddings
-#       "name_audio":  [str, ...],          # absolute paths to .wav name recordings
+#       "encodings":   [np.ndarray, ...],  # 128-d face embeddings
+#       "name_audio":  [str, ...],         # absolute paths to .wav name recordings
 #   }
 #
-# Note: "name_audio" replaces the old "names" text field. Each entry is the
-# absolute path to a .wav file containing a recording of that person's name.
+# "name_audio" replaces the old "names" text field. Each entry is the absolute
+# path to a .wav file containing a recording of that person's name.
 
 DB_FILE = os.path.join(SCRIPT_DIR, "faces.pkl")
 
@@ -159,7 +190,7 @@ def load_database() -> dict:
 
     # ── Legacy migration ──────────────────────────────────────────────────────
     # If the database was saved with the old 'names' text field, convert it.
-    # Old entries won't have audio files, so we mark them as missing.
+    # Old entries won't have audio files, so we mark them as needing re-enrollment.
     if "names" in db and "name_audio" not in db:
         print("Notice: Migrating legacy database (text names → audio paths).")
         db["name_audio"] = [
@@ -173,15 +204,26 @@ def load_database() -> dict:
 
 
 def save_database(db: dict):
-    """Persist the database dict to disk."""
-    with open(DB_FILE, "wb") as f:
+    """
+    Persist the database dict to disk using an atomic write.
+
+    Write to a temp file first, fsync to force the OS to flush to the SD card,
+    then atomically replace the real file. This ensures that a power cut mid-write
+    never corrupts faces.pkl — the old file stays intact until the new one is
+    fully written.
+    """
+    temp_file = DB_FILE + ".tmp"
+
+    with open(temp_file, "wb") as f:
         pickle.dump(db, f)
+        f.flush()             # Flush Python's internal write buffer
+        os.fsync(f.fileno())  # Force the OS to physically write to the SD card
+
+    os.replace(temp_file, DB_FILE)  # Atomic swap — no partial-write window
 
 
 def add_to_database(encoding: np.ndarray, name_audio_path: str):
-    """
-    Append a new face encoding and its associated name audio path to the database.
-    """
+    """Append a new face encoding and its name audio path to the database."""
     db = load_database()
     db["encodings"].append(encoding)
     db["name_audio"].append(name_audio_path)
@@ -191,40 +233,37 @@ def add_to_database(encoding: np.ndarray, name_audio_path: str):
 
 # ── Name Audio Recording ──────────────────────────────────────────────────────
 
-def record_name_audio() -> str | None:
+def record_name_audio() -> Optional[str]:
     """
-    Record NAME_RECORDING_SECONDS seconds of audio from the default microphone
-    and save it as a .wav file in the RECORDINGS_DIR folder.
+    Record NAME_RECORDING_SECONDS of audio from the default microphone and save
+    it as a .wav file in the RECORDINGS_DIR folder.
 
-    The flow is:
-        1. Play "say_their_name.m4a" to prompt the user (async — recording
-           starts immediately after the prompt begins so the user knows to speak).
+    Flow:
+        1. Play "say_their_name.m4a" synchronously so the user hears the prompt
+           before the recording window opens.
         2. Record for NAME_RECORDING_SECONDS seconds.
-        3. Save and return the absolute file path.
-
-    Returns the absolute path to the saved .wav file, or None on failure.
+        3. Save and return the absolute file path, or None on failure.
     """
     os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
-    # Use a timestamp-based filename to guarantee uniqueness
+    # Timestamp-based filename guarantees uniqueness across enrollments
     filename = f"name_{int(time.time())}.wav"
     filepath = os.path.join(RECORDINGS_DIR, filename)
 
-    # Play the prompt synchronously so the user hears it before the recording
-    # window opens. Blocking here is intentional — we want the prompt to
-    # finish before the countdown begins.
+    # Block until the prompt finishes — recording starts immediately after
     play_audio_sync(AUDIO_RESPONSES["say their name"])
-
     print(f"Recording name ({NAME_RECORDING_SECONDS}s)... speak now.")
 
     try:
-        recording = sd.rec(
-            frames=int(NAME_RECORDING_SECONDS * SAMPLE_RATE),
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="int16",
-        )
-        sd.wait()  # Block until the full recording is captured
+        with suppress_system_errors():
+            recording = sd.rec(
+                frames=int(NAME_RECORDING_SECONDS * SAMPLE_RATE),
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="int16",
+            )
+            sd.wait()  # Block until the full recording is captured
+
         wavfile.write(filepath, SAMPLE_RATE, recording)
         print(f"Name recording saved: {filepath}")
         return filepath
@@ -235,12 +274,13 @@ def record_name_audio() -> str | None:
 
 # ── Face Capture ──────────────────────────────────────────────────────────────
 
-def capture_single_face_encoding() -> np.ndarray | None:
+def capture_single_face_encoding(timeout_seconds: int = 10) -> Optional[np.ndarray]:
     """
-    Activate the camera and wait until a face is detected.
+    Activate the camera and wait until a face is detected, up to timeout_seconds.
     Returns the 128-d embedding of the first detected face, or None on failure.
 
-    Display window is suppressed when HEADLESS is True.
+    The timeout prevents an infinite hang in headless mode when no face is present.
+    Display window and keyboard abort are suppressed when HEADLESS is True.
     """
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -248,19 +288,25 @@ def capture_single_face_encoding() -> np.ndarray | None:
         play_audio(AUDIO_RESPONSES["camera error"])
         return None
 
-    print("Camera activated. Waiting for a face...")
+    print(f"Camera activated. Waiting up to {timeout_seconds}s for a face...")
     face_encoding = None
+    start_time = time.time()
 
     while True:
+        if time.time() - start_time > timeout_seconds:
+            print("[WARN] Camera timeout: No face detected.")
+            break
+
         ret, frame = cap.read()
         if not ret:
             print("Error: Failed to read frame from camera.")
             break
 
         if not HEADLESS:
-            cv2.imshow("Camera Feed - Waiting for Face", frame)
+            with suppress_system_errors():
+                cv2.imshow("Camera Feed - Waiting for Face", frame)
 
-        # Downscale for faster face detection
+        # Downscale to 1/4 size for faster face detection
         small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_small_frame)
@@ -274,9 +320,10 @@ def capture_single_face_encoding() -> np.ndarray | None:
 
         # Allow manual abort via 'q' key when a display is present
         if not HEADLESS:
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                print("Camera capture manually aborted.")
-                break
+            with suppress_system_errors():
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    print("Camera capture manually aborted.")
+                    break
 
     cap.release()
     if not HEADLESS:
@@ -298,10 +345,11 @@ def listen_for_command() -> str:
 
     recognizer = sr.Recognizer()
     try:
-        with sr.Microphone(sample_rate=16000) as source:
-            print("Listening for command...")
-            recognizer.adjust_for_ambient_noise(source, duration=0.5)
-            audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
+        with suppress_system_errors():
+            with sr.Microphone(sample_rate=16000) as source:
+                print("Listening for command...")
+                recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                audio = recognizer.listen(source, timeout=5, phrase_time_limit=5)
     except Exception as e:
         print(f"Microphone error: {e}")
         return ""
@@ -342,8 +390,8 @@ def handle_command(command: str) -> bool:
     elif "start scanning" in command or "start scan" in command:
 
         if not REGISTRATION_ENABLED:
-            # In headless/deployed mode, enrollment is intentionally disabled.
-            # The database should already be fully populated before deployment.
+            # Enrollment is intentionally disabled in deployed/headless mode.
+            # The database should be fully populated before deployment.
             print("Registration is disabled in recognition-only mode.")
             play_audio(AUDIO_RESPONSES["unknown command"])
             return True
@@ -352,9 +400,7 @@ def handle_command(command: str) -> bool:
         encoding = capture_single_face_encoding()
 
         if encoding is not None:
-            # Record the person's name as an audio clip instead of typing it
             name_audio_path = record_name_audio()
-
             if name_audio_path is not None:
                 add_to_database(encoding, name_audio_path)
                 print("Face and name recording saved to database.")
@@ -388,7 +434,7 @@ def handle_command(command: str) -> bool:
                 name_audio_path = db["name_audio"][best_match_index]
                 print(f"Match found (distance: {best_distance:.3f}). Playing name.")
 
-                # Play "Their name is..." then the recorded name clip, back-to-back.
+                # Play "Their name is..." then the recorded name clip back-to-back.
                 # Both calls are synchronous so the clips play sequentially with no gap.
                 play_audio_sync(AUDIO_RESPONSES["their name is"])
                 play_audio_sync(name_audio_path)
@@ -407,6 +453,7 @@ def handle_command(command: str) -> bool:
 # ── Wake Trigger Callback ─────────────────────────────────────────────────────
 
 _running = True
+_processing_lock = threading.Lock()
 
 
 def on_wake_triggered():
@@ -414,27 +461,42 @@ def on_wake_triggered():
     Called by gpiozero on a rising edge on GPIO 17 (Nicla Voice wake pulse).
     Runs automatically in a background thread managed by gpiozero.
 
+    Uses a threading.Lock() (non-blocking acquire) to ignore any new wake pulses
+    that arrive while a command is already being processed. The lock is always
+    released in the finally block, even if an exception occurs mid-command.
+
     Sequence:
         1. Play ready chime (async — audible cue that the system is active)
         2. Short pause to let the chime finish before opening the microphone
-        3. Listen for a voice command
+        3. Listen for a voice command via Whisper
         4. Handle the command
     """
     global _running
 
-    print("\n[WAKE] Nicla Voice triggered. Ready for command.")
-    play_audio(AUDIO_RESPONSES["wake"])
+    # Try to acquire the lock without blocking. If another trigger is already
+    # being processed, acquire() returns False immediately and we return early.
+    if not _processing_lock.acquire(blocking=False):
+        print("[WAKE] Ignored — system is already processing a command.")
+        return
 
-    # Wait for the chime to finish before activating the microphone.
-    # Adjust this value if your ready_chime.m4a is longer or shorter than ~0.8s.
-    time.sleep(0.8)
+    try:
+        print("\n[WAKE] Nicla Voice triggered. Ready for command.")
+        play_audio(AUDIO_RESPONSES["wake"])
 
-    command = listen_for_command()
-    should_continue = handle_command(command)
+        # Wait for the ready chime to finish before activating the microphone.
+        # Adjust if your ready_chime.m4a is longer or shorter than ~0.8s.
+        time.sleep(0.8)
 
-    if not should_continue:
-        _running = False
-        wake_button.when_pressed = None  # Detach handler to stop further triggers
+        command = listen_for_command()
+        should_continue = handle_command(command)
+
+        if not should_continue:
+            _running = False
+            wake_button.when_pressed = None  # Detach handler to stop further triggers
+
+    finally:
+        # Always release the lock — even if an exception occurred mid-command.
+        _processing_lock.release()
 
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
