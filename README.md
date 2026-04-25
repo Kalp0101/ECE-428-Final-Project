@@ -81,3 +81,25 @@ Raw frame → HOG/SVM detection → 68-point landmark alignment → ResNet-34 em
 
 ## Voice Detection and Control
 I'm gonna try to implement it using a custom keyword detection model on the Nicla Voice, but if I can't finish it in time, I'll rely on [Nvidia's Nemotron Speech-to-Text model (600m)](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) or [OpenAI's Whisper Small English (244m)](https://huggingface.co/openai/whisper-small.en) running on the Pi. 
+
+# User Guide:
+### Enrollment Steps (per person)
+ 
+1. Say *"Alexa"* to the Nicla Voice
+2. Hear the ready chime from the Pi
+3. Say *"start scanning"*
+4. Hold the person's face in front of the camera
+5. The system detects the face automatically — no button press needed
+6. Hear *"Say their name."*
+7. Speak the person's name clearly into the microphone (5-second recording window)
+8. Recording is saved. That person is now enrolled.
+Repeat for each person. The `faces.pkl` database and `name_recordings/` folder are built incrementally — you can enroll multiple people in one session or across sessions.
+ 
+### Identification (deployed mode)
+ 
+1. Say *"Alexa"* to the Nicla Voice
+2. Hear the ready chime
+3. Say *"who is this?"* or *"what is their name?"*
+4. Hold the person's face in front of the camera
+5. Hear *"Their name is..."* followed by the recorded audio clip of their name
+6. If not recognized, hear the not-recognized response
