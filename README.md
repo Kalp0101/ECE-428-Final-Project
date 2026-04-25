@@ -89,11 +89,11 @@ I'm gonna try to implement it using a custom keyword detection model on the Nicl
 2. Hear the ready chime from the Pi
 3. Say *"start scanning"*
 4. Hold the person's face in front of the camera
-5. The system detects the face automatically — no button press needed
+5. The system detects the face automatically
 6. Hear *"Say their name."*
 7. Speak the person's name clearly into the microphone (5-second recording window)
 8. Recording is saved. That person is now enrolled.
-Repeat for each person. The `faces.pkl` database and `name_recordings/` folder are built incrementally — you can enroll multiple people in one session or across sessions.
+Repeat for each person. The `faces.pkl` database and `name_recordings/` folder are built incrementally. You can enroll multiple people in one session or across sessions.
  
 ### Identification (deployed mode)
  
