@@ -1,68 +1,74 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Argus — Nicla Voice Wake Word Trigger
-//
-// Listens for the wake word "awaken" using the NDP120 Neural Decision Processor.
-// When detected, pulses LPIO0_EXT (J1 Pin 1) HIGH for 200ms to trigger the Pi.
-// ─────────────────────────────────────────────────────────────────────────────
+#include "Nicla_System.h"
+#include "NDP.h"
 
-#include <Arduino_NiclaSenseVoice.h>
-// Replace this with the exact header filename from your Edge Impulse export.
-// Open the downloaded .zip, look inside src/, and use that filename here.
-#include <awaken_detector_inferencing.h>
+const int WAKE_TRIGGER_PIN = 5;
 
-// LPIO0_EXT = J1 Pin 1 on the Nicla Voice.
-// Referenced as A6 in the Arduino Mbed board package (MKR A6 compatibility pin).
-const int WAKE_TRIGGER_PIN = A6;
+// Flag set by the callback, consumed by loop()
+volatile bool wakeDetected = false;
 
-NiclaSenseVoice voice;
-volatile bool wakeWordDetected = false;
-
-// Called by the NiclaSenseVoice library when inference produces a result.
-// Runs in interrupt context — keep it short.
-void onWakeWordDetected(const char* label, float score) {
-    // "awaken" must exactly match the class label used in Edge Impulse.
-    // It is case-sensitive and usually lowercase with underscores for spaces.
-    if (strcmp(label, "awaken") == 0 && score > 0.85f) {
-        wakeWordDetected = true;
+void ledRedBlink() {
+    while (1) {
+        nicla::leds.begin();
+        nicla::leds.setColor(red);
+        delay(200);
+        nicla::leds.setColor(off);
+        delay(200);
+        nicla::leds.end();
     }
+}
+
+// Keep this as short as possible — just set the flag and return immediately
+void onKeywordMatch(String keyword) {
+    wakeDetected = true;
 }
 
 void setup() {
     Serial.begin(115200);
-    delay(1000);  // Allow serial monitor to connect
 
     pinMode(WAKE_TRIGGER_PIN, OUTPUT);
     digitalWrite(WAKE_TRIGGER_PIN, LOW);
 
-    Serial.println("Initializing Nicla Voice...");
+    nicla::begin();
+    nicla::enable3V3LDO();
 
-    if (!voice.begin()) {
-        Serial.println("ERROR: NiclaSenseVoice initialization failed.");
-        while (true) { delay(1000); }
-    }
+    NDP.onError(ledRedBlink);
 
-    voice.setWakeWordCallback(onWakeWordDetected);
-    Serial.println("Listening for wake word: 'awaken'");
+    Serial.println("Loading Alexa synpackages...");
+    NDP.begin("mcu_fw_120_v91.synpkg");
+    NDP.load("dsp_firmware_v91.synpkg");
+    NDP.load("alexa_334_NDP120_B0_v11_v91.synpkg");
+    Serial.println("Packages loaded successfully.");
+
+    NDP.turnOnMicrophone();
+    NDP.onMatch(onKeywordMatch);
+    NDP.interrupts();
+
+    Serial.println("Listening for 'Alexa'...");
 }
 
 void loop() {
-    // voice.update() feeds audio to the NDP120 and runs inference.
-    // Do NOT add delay() here — it will starve the audio pipeline.
-    voice.update();
+    NDP.poll();
 
-    if (wakeWordDetected) {
-        wakeWordDetected = false;
+    if (wakeDetected) {
+        wakeDetected = false;
 
-        Serial.println("Wake word detected! Pulsing trigger pin.");
+        Serial.println("Wake word detected!");
 
-        // Pulse HIGH for 200ms — long enough for gpiozero's interrupt to catch.
+        // GPIO pulse to Raspberry Pi
         digitalWrite(WAKE_TRIGGER_PIN, HIGH);
-        delay(200);
+        delay(500);
         digitalWrite(WAKE_TRIGGER_PIN, LOW);
 
-        // Cooldown: prevents double-triggering from a single utterance.
-        delay(1000);
+        // Visual feedback — safe to use delay() here in loop()
+        nicla::leds.begin();
+        nicla::leds.setColor(green);
+        delay(500);
+        nicla::leds.setColor(off);
+        nicla::leds.end();
 
-        Serial.println("Listening again...");
+        Serial.println("Cooldown complete. Listening again...");
+
+        // Cooldown before re-arming to prevent double-triggers
+        delay(1000);
     }
 }
