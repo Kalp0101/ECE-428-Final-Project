@@ -1,10 +1,10 @@
-#install these dependencies into the Raspberry Pi:
+### Install these dependencies onto the Raspberry Pi:
 
 ~~~
 sudo apt update
 sudo apt install -y ffmpeg python3-pip python3-lgpio
 ~~~
-And these Python packages:
+### And these Python packages:
 ```
 pip install \
     opencv-python \
