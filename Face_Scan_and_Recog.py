@@ -505,7 +505,7 @@ def main():
     global REGISTRATION_ENABLED, _running
 
     parser = argparse.ArgumentParser(
-        description="Argus Facial Recognition System"
+        description="Facial Recognition System"
     )
     parser.add_argument(
         "--register",
@@ -520,7 +520,7 @@ def main():
     REGISTRATION_ENABLED = args.register
 
     print("=" * 50)
-    print("  Argus Facial Recognition System")
+    print("  Facial Recognition System")
     print("=" * 50)
 
     if REGISTRATION_ENABLED:
