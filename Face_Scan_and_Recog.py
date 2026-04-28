@@ -10,7 +10,6 @@ from faster_whisper import WhisperModel
 import numpy as np
 from gpiozero import Button
 import threading
-import argparse
 import time
 import sounddevice as sd
 import scipy.io.wavfile as wavfile
@@ -50,14 +49,9 @@ def suppress_system_errors():
 # Disables all cv2.imshow() calls that require a display server.
 HEADLESS = False
 
-# ── Registration Flag (set via argparse in main()) ────────────────────────────
-# Controls whether face enrollment is permitted. Set True only when running
-# with --register flag (i.e., during setup with a microphone available).
-REGISTRATION_ENABLED = False
-
 # ── GPIO Configuration ────────────────────────────────────────────────────────
 # BCM GPIO 17 = Physical Pin 11 on the Pi 5.
-# Receives a 200ms HIGH pulse from the Nicla Voice on wake word detection.
+# Receives a 500ms HIGH pulse from the Nicla Voice on wake word detection.
 # pull_up=False: Nicla drives the pin actively. bounce_time debounces the pulse.
 WAKE_GPIO_PIN = 17
 wake_button = Button(WAKE_GPIO_PIN, pull_up=False, bounce_time=0.3)
@@ -376,6 +370,11 @@ def handle_command(command: str) -> bool:
     """
     Process a single transcribed voice command.
     Returns False if the system should shut down, True to keep running.
+
+    Available commands at all times:
+      - "start scanning" / "start scan" → enroll a new face
+      - "who is this" / "what is their name" / "what's their name" → identify a face
+      - "exit" → shut down
     """
     if not command:
         return True
@@ -386,16 +385,8 @@ def handle_command(command: str) -> bool:
         play_audio_sync(AUDIO_RESPONSES["exit"])
         return False
 
-    # ── Face Registration ─────────────────────────────────────────────────────
+    # ── Face Enrollment ───────────────────────────────────────────────────────
     elif "start scanning" in command or "start scan" in command:
-
-        if not REGISTRATION_ENABLED:
-            # Enrollment is intentionally disabled in deployed/headless mode.
-            # The database should be fully populated before deployment.
-            print("Registration is disabled in recognition-only mode.")
-            play_audio(AUDIO_RESPONSES["unknown command"])
-            return True
-
         play_audio(AUDIO_RESPONSES["start scanning"])
         encoding = capture_single_face_encoding()
 
@@ -502,31 +493,11 @@ def on_wake_triggered():
 # ── Entry Point ───────────────────────────────────────────────────────────────
 
 def main():
-    global REGISTRATION_ENABLED, _running
-
-    parser = argparse.ArgumentParser(
-        description="Argus Facial Recognition System"
-    )
-    parser.add_argument(
-        "--register",
-        action="store_true",
-        help=(
-            "Enable face registration mode. "
-            "Use this during setup (with microphone available) to enroll faces. "
-            "Do not pass this flag on the deployed, enclosed unit."
-        ),
-    )
-    args = parser.parse_args()
-    REGISTRATION_ENABLED = args.register
+    global _running
 
     print("=" * 50)
     print("  Argus Facial Recognition System")
     print("=" * 50)
-
-    if REGISTRATION_ENABLED:
-        print("  Mode: REGISTRATION (face enrollment enabled)")
-    else:
-        print("  Mode: RECOGNITION ONLY (enrollment disabled)")
 
     if HEADLESS:
         print("  Display: HEADLESS (camera preview suppressed)")
