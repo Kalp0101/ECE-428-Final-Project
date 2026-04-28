@@ -47,7 +47,7 @@ def suppress_system_errors():
 # ── Deployment Flag ───────────────────────────────────────────────────────────
 # Set to True before final deployment in the enclosed, headless unit.
 # Disables all cv2.imshow() calls that require a display server.
-HEADLESS = False
+HEADLESS = True
 
 # ── GPIO Configuration ────────────────────────────────────────────────────────
 # BCM GPIO 17 = Physical Pin 11 on the Pi 5.
@@ -276,9 +276,14 @@ def capture_single_face_encoding(timeout_seconds: int = 10) -> Optional[np.ndarr
     The timeout prevents an infinite hang in headless mode when no face is present.
     Display window and keyboard abort are suppressed when HEADLESS is True.
     """
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Could not access the camera.")
+    try:
+        from picamera2 import Picamera2
+        picam2 = Picamera2()
+        config = picam2.create_preview_configuration(main={"size": (640, 480)})
+        picam2.configure(config)
+        picam2.start()
+    except Exception as e:
+        print(f"Error accessing Pi camera: {e}")
         play_audio(AUDIO_RESPONSES["camera error"])
         return None
 
@@ -291,17 +296,28 @@ def capture_single_face_encoding(timeout_seconds: int = 10) -> Optional[np.ndarr
             print("[WARN] Camera timeout: No face detected.")
             break
 
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Failed to read frame from camera.")
-            break
+        try:
+            # capture_array() returns BGRA or RGB. Standard config gives RGB, wait:
+            # Let's ensure we just process it. Actually Picamera2 'main' stream is usually RGB or RGBA. 
+            # We can convert it to BGR for cv2.imshow if we want, or just feed RGB to face_recognition.
+            frame_array = picam2.capture_array()
+            # If shape has 4 channels, convert to 3. If BGR, fix it.
+            # Picamera2 usually outputs XBGR or RGB. 
+            if frame_array.shape[-1] == 4:
+                frame_cv2 = cv2.cvtColor(frame_array, cv2.COLOR_BGRA2BGR)
+            else:
+                frame_cv2 = cv2.cvtColor(frame_array, cv2.COLOR_RGB2BGR) # Fallback assumption
+        except Exception as e:
+            print(f"Warning: Failed to capture frame from camera. Retrying... ({e})")
+            time.sleep(0.1)
+            continue
 
         if not HEADLESS:
             with suppress_system_errors():
-                cv2.imshow("Camera Feed - Waiting for Face", frame)
+                cv2.imshow("Camera Feed - Waiting for Face", frame_cv2)
 
-        # Downscale to 1/4 size for faster face detection
-        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        # Downscale to 1/2 size for faster face detection (since size is already 640x480)
+        small_frame = cv2.resize(frame_cv2, (0, 0), fx=0.5, fy=0.5)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_small_frame)
 
@@ -319,7 +335,12 @@ def capture_single_face_encoding(timeout_seconds: int = 10) -> Optional[np.ndarr
                     print("Camera capture manually aborted.")
                     break
 
-    cap.release()
+    try:
+        picam2.stop()
+        picam2.close()
+    except:
+        pass
+
     if not HEADLESS:
         cv2.destroyAllWindows()
 
