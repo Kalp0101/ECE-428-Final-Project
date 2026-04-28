@@ -268,7 +268,7 @@ def record_name_audio() -> Optional[str]:
 
 # ── Face Capture ──────────────────────────────────────────────────────────────
 
-def capture_single_face_encoding(timeout_seconds: int = 10) -> Optional[np.ndarray]:
+def capture_single_face_encoding(timeout_seconds: int = 15) -> Optional[np.ndarray]:
     """
     Activate the camera and wait until a face is detected, up to timeout_seconds.
     Returns the 128-d embedding of the first detected face, or None on failure.
@@ -408,7 +408,7 @@ def handle_command(command: str) -> bool:
 
     # ── Face Enrollment ───────────────────────────────────────────────────────
     elif "start scanning" in command or "start scan" in command:
-        play_audio(AUDIO_RESPONSES["start scanning"])
+        play_audio_sync(AUDIO_RESPONSES["start scanning"])
         encoding = capture_single_face_encoding()
 
         if encoding is not None:
@@ -427,7 +427,7 @@ def handle_command(command: str) -> bool:
         or "what is their name" in command
         or "what's their name" in command
     ):
-        play_audio(AUDIO_RESPONSES["who is this"])
+        play_audio_sync(AUDIO_RESPONSES["who is this"])
         encoding = capture_single_face_encoding()
 
         if encoding is not None:
