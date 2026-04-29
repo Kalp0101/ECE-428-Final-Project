@@ -86,7 +86,7 @@ I implemented the wake word detection using a pre-trained "Alexa" model on the N
 <img width="1093" height="669" alt="Embedded Final Project drawio" src="https://github.com/user-attachments/assets/efd781bb-5de2-4e31-90b1-6233b67db98b" />
 
 # User Guide:
-### Enrollment Steps (per person)
+### Enroll New Face Steps
  
 1. Say *"Alexa"* to the Nicla Voice
 2. Hear the ready chime from the Pi
@@ -98,7 +98,7 @@ I implemented the wake word detection using a pre-trained "Alexa" model on the N
 8. Recording is saved. That person is now enrolled.
 Repeat for each person. The `faces.pkl` database and `name_recordings/` folder are built incrementally. You can enroll multiple people in one session or across sessions.
  
-### Identification (deployed mode)
+### Identification Steps
  
 1. Say *"Alexa"* to the Nicla Voice
 2. Hear the ready chime
