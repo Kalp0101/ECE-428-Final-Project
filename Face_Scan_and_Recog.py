@@ -8,7 +8,7 @@ import subprocess
 import speech_recognition as sr
 from faster_whisper import WhisperModel
 import numpy as np
-from gpiozero import Button
+import lgpio
 import threading
 import time
 import sounddevice as sd
@@ -52,9 +52,9 @@ HEADLESS = True
 # ── GPIO Configuration ────────────────────────────────────────────────────────
 # BCM GPIO 17 = Physical Pin 11 on the Pi 5.
 # Receives a 500ms HIGH pulse from the Nicla Voice on wake word detection.
-# pull_up=False: Nicla drives the pin actively. bounce_time debounces the pulse.
+# gpiochip4 is the correct chip for GPIO access on the Raspberry Pi 5.
 WAKE_GPIO_PIN = 17
-wake_button = Button(WAKE_GPIO_PIN, pull_up=False, bounce_time=0.3)
+GPIO_CHIP     = 4
 
 # ── Audio Recording Configuration ────────────────────────────────────────────
 SAMPLE_RATE = 16000        # Hz — matches Whisper's expected input rate
@@ -68,10 +68,10 @@ RECORDINGS_DIR = os.path.join(
 #
 # Required files:
 #   ready_chime.m4a      — plays when Nicla wake trigger fires
-#   completed_scan.m4a   — plays when face scan begins
-#   analyzing_face.m4a   — plays when identification begins
-#   say_their_name.m4a   — prompts user to record the person's name
-#   their_name_is.m4a    — "Their name is..." prefix before name playback
+#   completed_scan.m4a   — plays when face scan begins (~3s)
+#   analyzing_face.m4a   — plays when identification begins (~3s)
+#   say_their_name.m4a   — prompts user to record the person's name (~2s)
+#   their_name_is.m4a    — "Their name is..." prefix before name playback (~3s)
 #   shutting_down.m4a    — plays on exit command
 #   unknown_command.m4a  — plays on unrecognised command
 #   not_recognized.m4a   — plays when face is not in the database
@@ -127,6 +127,7 @@ def play_audio_sync(file_path: str):
     """
     Play an audio file synchronously (blocking).
     Use when the next action must wait until playback finishes — e.g., playing
+    "Completed scan." fully before activating the camera, or playing
     "Their name is..." immediately before the recorded name clip.
     """
     resolved = _resolve_path(file_path)
@@ -273,7 +274,8 @@ def capture_single_face_encoding(timeout_seconds: int = 15) -> Optional[np.ndarr
     Activate the camera and wait until a face is detected, up to timeout_seconds.
     Returns the 128-d embedding of the first detected face, or None on failure.
 
-    The timeout prevents an infinite hang in headless mode when no face is present.
+    Timeout is 15 seconds to give the user enough time to point the camera at
+    a face after the preceding audio prompt finishes playing.
     Display window and keyboard abort are suppressed when HEADLESS is True.
     """
     try:
@@ -297,16 +299,13 @@ def capture_single_face_encoding(timeout_seconds: int = 15) -> Optional[np.ndarr
             break
 
         try:
-            # capture_array() returns BGRA or RGB. Standard config gives RGB, wait:
-            # Let's ensure we just process it. Actually Picamera2 'main' stream is usually RGB or RGBA. 
-            # We can convert it to BGR for cv2.imshow if we want, or just feed RGB to face_recognition.
             frame_array = picam2.capture_array()
-            # If shape has 4 channels, convert to 3. If BGR, fix it.
-            # Picamera2 usually outputs XBGR or RGB. 
+            # Picamera2 outputs XBGR (4-channel) on Pi 5 with PiSP.
+            # Convert to 3-channel BGR for OpenCV and face_recognition.
             if frame_array.shape[-1] == 4:
                 frame_cv2 = cv2.cvtColor(frame_array, cv2.COLOR_BGRA2BGR)
             else:
-                frame_cv2 = cv2.cvtColor(frame_array, cv2.COLOR_RGB2BGR) # Fallback assumption
+                frame_cv2 = cv2.cvtColor(frame_array, cv2.COLOR_RGB2BGR)
         except Exception as e:
             print(f"Warning: Failed to capture frame from camera. Retrying... ({e})")
             time.sleep(0.1)
@@ -316,7 +315,7 @@ def capture_single_face_encoding(timeout_seconds: int = 15) -> Optional[np.ndarr
             with suppress_system_errors():
                 cv2.imshow("Camera Feed - Waiting for Face", frame_cv2)
 
-        # Downscale to 1/2 size for faster face detection (since size is already 640x480)
+        # Downscale to 1/2 size for faster face detection (640x480 → 320x240)
         small_frame = cv2.resize(frame_cv2, (0, 0), fx=0.5, fy=0.5)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
         face_locations = face_recognition.face_locations(rgb_small_frame)
@@ -392,10 +391,17 @@ def handle_command(command: str) -> bool:
     Process a single transcribed voice command.
     Returns False if the system should shut down, True to keep running.
 
-    Available commands at all times:
+    Available commands:
       - "start scanning" / "start scan" → enroll a new face
       - "who is this" / "what is their name" / "what's their name" → identify a face
       - "exit" → shut down
+
+    Audio sequencing:
+      - completed_scan.m4a and analyzing_face.m4a are played synchronously so
+        the camera only activates after the full prompt has finished playing.
+        This gives the user time to position the camera before the timeout begins.
+      - say_their_name.m4a and their_name_is.m4a are also synchronous so each
+        clip finishes before the next action starts.
     """
     if not command:
         return True
@@ -408,6 +414,7 @@ def handle_command(command: str) -> bool:
 
     # ── Face Enrollment ───────────────────────────────────────────────────────
     elif "start scanning" in command or "start scan" in command:
+        # Synchronous: camera activates only after "Completed scan." finishes (~3s)
         play_audio_sync(AUDIO_RESPONSES["start scanning"])
         encoding = capture_single_face_encoding()
 
@@ -427,6 +434,7 @@ def handle_command(command: str) -> bool:
         or "what is their name" in command
         or "what's their name" in command
     ):
+        # Synchronous: camera activates only after "Analyzing face." finishes (~3s)
         play_audio_sync(AUDIO_RESPONSES["who is this"])
         encoding = capture_single_face_encoding()
 
@@ -462,16 +470,46 @@ def handle_command(command: str) -> bool:
     return True
 
 
-# ── Wake Trigger Callback ─────────────────────────────────────────────────────
+# ── GPIO Wake Polling Thread ──────────────────────────────────────────────────
 
 _running = True
 _processing_lock = threading.Lock()
 
 
+def gpio_poll_thread(gpio_handle: int):
+    """
+    Background thread that polls GPIO 17 directly via lgpio.
+    This replaces gpiozero's callback system, which does not reliably detect
+    edges when running as a systemd service on the Pi 5.
+
+    Watches for a LOW → HIGH transition (rising edge) and calls
+    on_wake_triggered() when one is detected. Debounces by waiting for the
+    pin to return LOW before watching for the next trigger.
+    """
+    last_state = lgpio.gpio_read(gpio_handle, WAKE_GPIO_PIN)
+
+    while _running:
+        current_state = lgpio.gpio_read(gpio_handle, WAKE_GPIO_PIN)
+
+        if current_state == 1 and last_state == 0:
+            # Rising edge detected — fire the wake handler in a new thread
+            # so the poll loop can continue without blocking.
+            t = threading.Thread(target=on_wake_triggered, daemon=True)
+            t.start()
+
+            # Wait for the pin to go LOW again before watching for the next
+            # trigger — prevents the same pulse firing multiple times.
+            while lgpio.gpio_read(gpio_handle, WAKE_GPIO_PIN) == 1 and _running:
+                time.sleep(0.01)
+
+        last_state = current_state
+        time.sleep(0.005)  # Poll at 200 Hz — fast enough to catch a 500ms pulse
+
+
 def on_wake_triggered():
     """
-    Called by gpiozero on a rising edge on GPIO 17 (Nicla Voice wake pulse).
-    Runs automatically in a background thread managed by gpiozero.
+    Called by gpio_poll_thread() when a rising edge is detected on GPIO 17.
+    Runs in its own daemon thread so the poll loop is never blocked.
 
     Uses a threading.Lock() (non-blocking acquire) to ignore any new wake pulses
     that arrive while a command is already being processed. The lock is always
@@ -485,8 +523,7 @@ def on_wake_triggered():
     """
     global _running
 
-    # Try to acquire the lock without blocking. If another trigger is already
-    # being processed, acquire() returns False immediately and we return early.
+    # If already processing a command, ignore this trigger.
     if not _processing_lock.acquire(blocking=False):
         print("[WAKE] Ignored — system is already processing a command.")
         return
@@ -504,7 +541,6 @@ def on_wake_triggered():
 
         if not should_continue:
             _running = False
-            wake_button.when_pressed = None  # Detach handler to stop further triggers
 
     finally:
         # Always release the lock — even if an exception occurred mid-command.
@@ -525,19 +561,58 @@ def main():
     else:
         print("  Display: ACTIVE (camera preview enabled)")
 
-    print(f"  Wake GPIO: BCM {WAKE_GPIO_PIN}")
+    print(f"  Wake GPIO: BCM {WAKE_GPIO_PIN} (gpiochip{GPIO_CHIP})")
     print(f"  Name recordings: {RECORDINGS_DIR}")
     print("=" * 50)
+
+    # ── Open GPIO chip and claim pin ──────────────────────────────────────────
+    # Retry up to 10 times with 3-second gaps in case lgpio is still releasing
+    # the pin from a previous process after a crash restart.
+    gpio_handle = None
+    max_attempts = 10
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            gpio_handle = lgpio.gpiochip_open(GPIO_CHIP)
+            lgpio.gpio_claim_input(gpio_handle, WAKE_GPIO_PIN)
+            print(f"GPIO {WAKE_GPIO_PIN} claimed successfully.")
+            break
+        except Exception as e:
+            if gpio_handle is not None:
+                try:
+                    lgpio.gpiochip_close(gpio_handle)
+                except:
+                    pass
+                gpio_handle = None
+            if attempt < max_attempts:
+                print(f"GPIO busy (attempt {attempt}/{max_attempts}), retrying in 3s...")
+                time.sleep(3)
+            else:
+                print(f"Failed to claim GPIO after {max_attempts} attempts: {e}")
+                sys.exit(1)
+
+    # ── Start polling thread ──────────────────────────────────────────────────
+    poller = threading.Thread(
+        target=gpio_poll_thread,
+        args=(gpio_handle,),
+        daemon=True
+    )
+    poller.start()
+
     print(f"\nWaiting for wake word trigger on GPIO {WAKE_GPIO_PIN}...")
     print("(Say your wake word to the Nicla Voice to activate)\n")
 
-    # Attach the rising-edge callback
-    wake_button.when_pressed = on_wake_triggered
-
-    # Keep the main thread alive until the exit command is received.
-    # All work happens inside on_wake_triggered() via gpiozero's background thread.
-    while _running:
-        time.sleep(0.1)
+    # Keep the main thread alive until the exit command sets _running = False.
+    try:
+        while _running:
+            time.sleep(0.1)
+    finally:
+        # Clean up the GPIO handle on any exit
+        try:
+            lgpio.gpiochip_close(gpio_handle)
+            print("GPIO released.")
+        except:
+            pass
 
     print("\nSystem shut down cleanly.")
 
